@@ -36,7 +36,31 @@ export function toggleUsageCompact(item: WidgetItem): WidgetItem {
     return toggleMetadataFlag(item, 'compact');
 }
 
-interface UsageDisplayModifierOptions { includeCompact?: boolean }
+export type TimeFormatMode = 'relative' | 'relative-days' | 'absolute' | 'combined';
+
+export function getTimeFormatMode(item: WidgetItem): TimeFormatMode {
+    const mode = item.metadata?.timeFormat;
+    if (mode === 'relative-days' || mode === 'absolute' || mode === 'combined') {
+        return mode;
+    }
+    return 'relative';
+}
+
+export function cycleTimeFormatMode(item: WidgetItem): WidgetItem {
+    const modes: TimeFormatMode[] = ['relative', 'relative-days', 'absolute', 'combined'];
+    const currentIndex = modes.indexOf(getTimeFormatMode(item));
+    const nextMode = modes[(currentIndex + 1) % modes.length] ?? 'relative';
+
+    return {
+        ...item,
+        metadata: {
+            ...(item.metadata ?? {}),
+            timeFormat: nextMode
+        }
+    };
+}
+
+interface UsageDisplayModifierOptions { includeCompact?: boolean; includeTimeFormat?: boolean }
 
 export function getUsageDisplayModifierText(
     item: WidgetItem,
@@ -57,6 +81,13 @@ export function getUsageDisplayModifierText(
 
     if (options.includeCompact && isUsageCompact(item)) {
         modifiers.push('compact');
+    }
+
+    if (options.includeTimeFormat) {
+        const timeFormat = getTimeFormatMode(item);
+        if (timeFormat !== 'relative') {
+            modifiers.push(timeFormat);
+        }
     }
 
     return makeModifierText(modifiers);

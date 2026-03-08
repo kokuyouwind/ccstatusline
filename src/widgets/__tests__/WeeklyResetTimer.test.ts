@@ -116,6 +116,7 @@ describe('WeeklyResetTimerWidget', () => {
         createWidget: () => new WeeklyResetTimerWidget(),
         expectedDisplayName: 'Weekly Reset Timer',
         expectedModifierText: '(short bar, inverted)',
+        includeTimeFormat: true,
         modifierItem: {
             id: 'weekly-reset',
             type: 'weekly-reset-timer',

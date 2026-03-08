@@ -105,6 +105,45 @@ export function formatUsageDuration(durationMs: number, compact = false): string
     return `${elapsedHours}hr ${elapsedMinutes}m`;
 }
 
+export function formatUsageDurationWithDays(durationMs: number, compact = false): string {
+    const clampedMs = Math.max(0, durationMs);
+    const days = Math.floor(clampedMs / (1000 * 60 * 60 * 24));
+
+    if (days === 0) {
+        return formatUsageDuration(durationMs, compact);
+    }
+
+    const hours = Math.floor((clampedMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((clampedMs % (1000 * 60 * 60)) / (1000 * 60));
+
+    if (compact) {
+        return minutes === 0 ? `${days}d ${hours}h` : `${days}d ${hours}h${minutes}m`;
+    }
+
+    return minutes === 0 ? `${days}d ${hours}hr` : `${days}d ${hours}hr ${minutes}m`;
+}
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+export function formatResetAtAbsolute(remainingMs: number, nowMs = Date.now()): string {
+    const resetAt = new Date(nowMs + Math.max(0, remainingMs));
+    const now = new Date(nowMs);
+
+    const time = `${resetAt.getHours().toString().padStart(2, '0')}:${resetAt.getMinutes().toString().padStart(2, '0')}`;
+
+    if (resetAt.toDateString() === now.toDateString()) {
+        return time;
+    }
+
+    return `${WEEKDAYS[resetAt.getDay()]} ${time}`;
+}
+
+export function formatResetAtCombined(remainingMs: number, compact = false, nowMs = Date.now()): string {
+    const absolute = formatResetAtAbsolute(remainingMs, nowMs);
+    const relative = formatUsageDurationWithDays(remainingMs, compact);
+    return `${absolute} (${relative})`;
+}
+
 export function getUsageErrorMessage(error: UsageError): string {
     switch (error) {
         case 'no-credentials': return '[No credentials]';

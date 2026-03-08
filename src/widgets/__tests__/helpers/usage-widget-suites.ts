@@ -43,6 +43,7 @@ interface UsageTimerEditorSuiteConfig<TWidget extends UsageWidgetLike & { getDis
     expectedDisplayName: string;
     expectedModifierText: string;
     modifierItem: WidgetItem;
+    includeTimeFormat?: boolean;
 }
 
 const EXPECTED_USAGE_KEYBINDS: CustomKeybind[] = [
@@ -54,6 +55,11 @@ const EXPECTED_TIMER_KEYBINDS: CustomKeybind[] = [
     { key: 'p', label: '(p)rogress toggle', action: 'toggle-progress' },
     { key: 'v', label: 'in(v)ert fill', action: 'toggle-invert' },
     { key: 's', label: '(s)hort time', action: 'toggle-compact' }
+];
+
+const EXPECTED_RESET_TIMER_KEYBINDS: CustomKeybind[] = [
+    ...EXPECTED_TIMER_KEYBINDS,
+    { key: 't', label: '(t)ime format', action: 'cycle-time-format' }
 ];
 
 function getUsageContext(field: 'sessionUsage' | 'weeklyUsage', value: number): RenderContext {
@@ -170,12 +176,13 @@ export function runUsageTimerEditorSuite<TWidget extends UsageWidgetLike & { get
         vi.clearAllMocks();
     });
 
-    it('supports raw value and exposes progress/invert/compact keybinds', () => {
+    it('supports raw value and exposes expected keybinds', () => {
         const widget = config.createWidget();
+        const expectedKeybinds = config.includeTimeFormat ? EXPECTED_RESET_TIMER_KEYBINDS : EXPECTED_TIMER_KEYBINDS;
 
         expect(widget.getDisplayName()).toBe(config.expectedDisplayName);
         expect(widget.supportsRawValue()).toBe(true);
-        expect(widget.getCustomKeybinds()).toEqual(EXPECTED_TIMER_KEYBINDS);
+        expect(widget.getCustomKeybinds()).toEqual(expectedKeybinds);
     });
 
     it('clears invert metadata when cycling back to time mode', () => {

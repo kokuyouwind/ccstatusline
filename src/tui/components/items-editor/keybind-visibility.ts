@@ -18,6 +18,10 @@ export function shouldShowCustomKeybind(widget: WidgetItem, keybind: CustomKeybi
     }
 
     if (keybind.action === 'toggle-compact') {
+        return !isProgressMode(widget) && widget.metadata?.timeFormat !== 'absolute';
+    }
+
+    if (keybind.action === 'cycle-time-format') {
         return !isProgressMode(widget);
     }
 

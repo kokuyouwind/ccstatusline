@@ -14,7 +14,10 @@ import {
     SEVEN_DAY_WINDOW_MS
 } from '../usage-types';
 import {
+    formatResetAtAbsolute,
+    formatResetAtCombined,
     formatUsageDuration,
+    formatUsageDurationWithDays,
     getUsageWindowFromResetAt,
     getWeeklyUsageWindowFromResetAt,
     resolveUsageWindowWithFallback,
@@ -145,5 +148,43 @@ describe('usage window helpers', () => {
         expect(formatUsageDuration(3 * 60 * 60 * 1000, true)).toBe('3h');
         expect(formatUsageDuration(3.5 * 60 * 60 * 1000, true)).toBe('3h30m');
         expect(formatUsageDuration(4 * 60 * 60 * 1000 + 5 * 60 * 1000, true)).toBe('4h5m');
+    });
+
+    it('formats duration with days in standard style', () => {
+        expect(formatUsageDurationWithDays(0)).toBe('0hr');
+        expect(formatUsageDurationWithDays(3 * 60 * 60 * 1000)).toBe('3hr');
+        expect(formatUsageDurationWithDays(25 * 60 * 60 * 1000)).toBe('1d 1hr');
+        expect(formatUsageDurationWithDays(5 * 24 * 60 * 60 * 1000 + 12 * 60 * 60 * 1000 + 57 * 60 * 1000)).toBe('5d 12hr 57m');
+        expect(formatUsageDurationWithDays(2 * 24 * 60 * 60 * 1000)).toBe('2d 0hr');
+    });
+
+    it('formats duration with days in compact style', () => {
+        expect(formatUsageDurationWithDays(0, true)).toBe('0h');
+        expect(formatUsageDurationWithDays(3 * 60 * 60 * 1000, true)).toBe('3h');
+        expect(formatUsageDurationWithDays(25 * 60 * 60 * 1000, true)).toBe('1d 1h');
+        expect(formatUsageDurationWithDays(5 * 24 * 60 * 60 * 1000 + 12 * 60 * 60 * 1000 + 57 * 60 * 1000, true)).toBe('5d 12h57m');
+        expect(formatUsageDurationWithDays(2 * 24 * 60 * 60 * 1000, true)).toBe('2d 0h');
+    });
+
+    it('formats reset at as absolute time on same day', () => {
+        const nowMs = Date.parse('2026-03-07T10:00:00.000');
+        const remainingMs = 4.5 * 60 * 60 * 1000; // 4hr 30m later = 14:30
+
+        expect(formatResetAtAbsolute(remainingMs, nowMs)).toBe('14:30');
+    });
+
+    it('formats reset at as absolute time with weekday on different day', () => {
+        const nowMs = Date.parse('2026-03-07T22:00:00.000');
+        const remainingMs = 5 * 24 * 60 * 60 * 1000 + 16.5 * 60 * 60 * 1000; // Fri 14:30
+
+        expect(formatResetAtAbsolute(remainingMs, nowMs)).toBe('Fri 14:30');
+    });
+
+    it('formats reset at as combined absolute and relative-days', () => {
+        const nowMs = Date.parse('2026-03-07T22:00:00.000');
+        const remainingMs = 5 * 24 * 60 * 60 * 1000 + 16.5 * 60 * 60 * 1000;
+
+        expect(formatResetAtCombined(remainingMs, false, nowMs)).toBe('Fri 14:30 (5d 16hr 30m)');
+        expect(formatResetAtCombined(remainingMs, true, nowMs)).toBe('Fri 14:30 (5d 16h30m)');
     });
 });

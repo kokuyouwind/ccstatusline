@@ -1,6 +1,9 @@
 export { fetchUsageData } from './usage-fetch';
 export {
+    formatResetAtAbsolute,
+    formatResetAtCombined,
     formatUsageDuration,
+    formatUsageDurationWithDays,
     getUsageErrorMessage,
     getUsageWindowFromBlockMetrics,
     getUsageWindowFromResetAt,
