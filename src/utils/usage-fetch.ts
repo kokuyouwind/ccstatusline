@@ -21,7 +21,26 @@ const CACHE_MAX_AGE = 180; // seconds
 const LOCK_MAX_AGE = 30;   // rate limit: only try API once per 30 seconds
 const TOKEN_CACHE_MAX_AGE = 3600; // 1 hour
 
-const UsageCredentialsSchema = z.object({ claudeAiOauth: z.object({ accessToken: z.string().nullable().optional() }).optional() });
+const UsageCredentialsSchema = z.object({
+    claudeAiOauth: z.object({
+        accessToken: z.string().nullable().optional(),
+        refreshToken: z.string().nullable().optional(),
+        expiresAt: z.number().nullable().optional()
+    }).optional()
+});
+
+interface OAuthCredentials {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+}
+
+const TOKEN_REFRESH_HOST = 'console.anthropic.com';
+const TOKEN_REFRESH_PATH = '/v1/oauth/token';
+const TOKEN_REFRESH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const TOKEN_REFRESH_TIMEOUT_MS = 5000;
+// リフレッシュは期限の5分前から行う
+const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
 const CachedUsageDataSchema = z.object({
     sessionUsage: z.number().nullable().optional(),
@@ -61,9 +80,158 @@ function parseJsonWithSchema<T>(rawJson: string, schema: z.ZodType<T>): T | null
     }
 }
 
-function parseUsageAccessToken(rawJson: string): string | null {
+function parseOAuthCredentials(rawJson: string): OAuthCredentials | null {
     const parsed = parseJsonWithSchema(rawJson, UsageCredentialsSchema);
-    return parsed?.claudeAiOauth?.accessToken ?? null;
+    const oauth = parsed?.claudeAiOauth;
+    if (!oauth?.accessToken) {
+        return null;
+    }
+    return {
+        accessToken: oauth.accessToken,
+        refreshToken: oauth.refreshToken ?? undefined,
+        expiresAt: oauth.expiresAt ?? undefined
+    };
+}
+
+function isTokenExpired(creds: OAuthCredentials): boolean {
+    if (!creds.expiresAt) {
+        return false;
+    }
+    return Date.now() >= creds.expiresAt - TOKEN_EXPIRY_BUFFER_MS;
+}
+
+const TokenRefreshResponseSchema = z.object({
+    access_token: z.string(),
+    refresh_token: z.string().optional(),
+    expires_in: z.number().optional()
+});
+
+async function refreshOAuthToken(refreshToken: string): Promise<OAuthCredentials | null> {
+    return new Promise((resolve) => {
+        let settled = false;
+
+        const finish = (value: OAuthCredentials | null) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            resolve(value);
+        };
+
+        const body = JSON.stringify({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: TOKEN_REFRESH_CLIENT_ID
+        });
+
+        const proxyUrl = getUsageApiProxyUrl();
+
+        const requestOptions: https.RequestOptions = {
+            hostname: TOKEN_REFRESH_HOST,
+            path: TOKEN_REFRESH_PATH,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body)
+            },
+            timeout: TOKEN_REFRESH_TIMEOUT_MS,
+            ...(proxyUrl ? { agent: new HttpsProxyAgent(proxyUrl) } : {})
+        };
+
+        const request = https.request(requestOptions, (response) => {
+            let data = '';
+            response.setEncoding('utf8');
+
+            response.on('data', (chunk: string) => {
+                data += chunk;
+            });
+
+            response.on('end', () => {
+                if (response.statusCode !== 200 || !data) {
+                    finish(null);
+                    return;
+                }
+
+                const parsed = parseJsonWithSchema(data, TokenRefreshResponseSchema);
+                if (!parsed) {
+                    finish(null);
+                    return;
+                }
+
+                const expiresAt = parsed.expires_in
+                    ? Date.now() + parsed.expires_in * 1000
+                    : undefined;
+
+                finish({
+                    accessToken: parsed.access_token,
+                    refreshToken: parsed.refresh_token ?? refreshToken,
+                    expiresAt
+                });
+            });
+        });
+
+        request.on('error', () => { finish(null); });
+        request.on('timeout', () => {
+            request.destroy();
+            finish(null);
+        });
+        request.write(body);
+        request.end();
+    });
+}
+
+function readFullCredentials(): string | null {
+    try {
+        if (process.platform === 'darwin') {
+            return execSync(
+                'security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
+                { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+            ).trim();
+        }
+
+        const credFile = path.join(getClaudeConfigDir(), '.credentials.json');
+        return fs.readFileSync(credFile, 'utf8');
+    } catch {
+        return null;
+    }
+}
+
+const WriteCredentialsSchema = z.looseObject({ claudeAiOauth: z.record(z.string(), z.unknown()).optional() });
+
+function writeCredentials(rawJson: string, updatedCreds: OAuthCredentials): boolean {
+    try {
+        const parsed = WriteCredentialsSchema.safeParse(JSON.parse(rawJson));
+        if (!parsed.success) {
+            return false;
+        }
+
+        const fullData = parsed.data;
+        const existingOAuth = fullData.claudeAiOauth ?? {};
+        fullData.claudeAiOauth = {
+            ...existingOAuth,
+            accessToken: updatedCreds.accessToken,
+            refreshToken: updatedCreds.refreshToken ?? existingOAuth.refreshToken,
+            expiresAt: updatedCreds.expiresAt ?? existingOAuth.expiresAt
+        };
+
+        const updatedJson = JSON.stringify(fullData);
+
+        if (process.platform === 'darwin') {
+            // macOS: キーチェーンを更新（既存のエントリを削除して再追加）
+            execSync(
+                'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; '
+                + `security add-generic-password -s "Claude Code-credentials" -a "Claude Code" -w ${JSON.stringify(updatedJson)}`,
+                { stdio: ['pipe', 'pipe', 'pipe'] }
+            );
+            return true;
+        }
+
+        const credFile = path.join(getClaudeConfigDir(), '.credentials.json');
+        fs.writeFileSync(credFile, updatedJson, 'utf8');
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 function parseCachedUsageData(rawJson: string): UsageData | null {
@@ -128,7 +296,7 @@ function getStaleUsageOrError(error: UsageError, now: number): UsageData {
     return setCachedUsageError(error, now);
 }
 
-function getUsageToken(): string | null {
+async function getUsageToken(): Promise<string | null> {
     const now = Math.floor(Date.now() / 1000);
 
     // Return cached token if still valid
@@ -136,33 +304,31 @@ function getUsageToken(): string | null {
         return cachedUsageToken;
     }
 
-    try {
-        const isMac = process.platform === 'darwin';
-        if (isMac) {
-            // macOS: read from keychain
-            const result = execSync(
-                'security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
-                { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-            ).trim();
-            const token = parseUsageAccessToken(result);
-            if (token) {
-                cachedUsageToken = token;
-                usageTokenCacheTime = now;
-            }
-            return token;
-        }
-
-        // Non-macOS: read from credentials file, honoring CLAUDE_CONFIG_DIR
-        const credFile = path.join(getClaudeConfigDir(), '.credentials.json');
-        const token = parseUsageAccessToken(fs.readFileSync(credFile, 'utf8'));
-        if (token) {
-            cachedUsageToken = token;
-            usageTokenCacheTime = now;
-        }
-        return token;
-    } catch {
+    const rawJson = readFullCredentials();
+    if (!rawJson) {
         return null;
     }
+
+    const creds = parseOAuthCredentials(rawJson);
+    if (!creds) {
+        return null;
+    }
+
+    // トークンが期限切れ or まもなく期限切れの場合、refreshTokenでリフレッシュ
+    if (isTokenExpired(creds) && creds.refreshToken) {
+        const refreshed = await refreshOAuthToken(creds.refreshToken);
+        if (refreshed) {
+            writeCredentials(rawJson, refreshed);
+            cachedUsageToken = refreshed.accessToken;
+            usageTokenCacheTime = now;
+            return refreshed.accessToken;
+        }
+        // リフレッシュ失敗時は期限切れトークンをそのまま試す
+    }
+
+    cachedUsageToken = creds.accessToken;
+    usageTokenCacheTime = now;
+    return creds.accessToken;
 }
 
 function readStaleUsageCache(): UsageData | null {
@@ -281,7 +447,7 @@ export async function fetchUsageData(): Promise<UsageData> {
     }
 
     // Get token before lock/rate-limit checks so auth failures are not masked as timeout.
-    const token = getUsageToken();
+    const token = await getUsageToken();
     if (!token) {
         return getStaleUsageOrError('no-credentials', now);
     }
