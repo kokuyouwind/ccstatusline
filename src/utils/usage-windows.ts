@@ -147,6 +147,7 @@ export function formatResetAtCombined(remainingMs: number, compact = false, nowM
 export function getUsageErrorMessage(error: UsageError): string {
     switch (error) {
         case 'no-credentials': return '[No credentials]';
+        case 'token-expired': return '[Token expired]';
         case 'timeout': return '[Timeout]';
         case 'api-error': return '[API Error]';
         case 'parse-error': return '[Parse Error]';

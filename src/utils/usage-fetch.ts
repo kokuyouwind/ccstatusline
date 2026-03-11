@@ -217,10 +217,9 @@ function writeCredentials(rawJson: string, updatedCreds: OAuthCredentials): bool
         const updatedJson = JSON.stringify(fullData);
 
         if (process.platform === 'darwin') {
-            // macOS: キーチェーンを更新（既存のエントリを削除して再追加）
+            // macOS: キーチェーンを原子的に更新（-Uフラグで既存エントリを上書き）
             execSync(
-                'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; '
-                + `security add-generic-password -s "Claude Code-credentials" -a "Claude Code" -w ${JSON.stringify(updatedJson)}`,
+                `security add-generic-password -U -s "Claude Code-credentials" -a "Claude Code" -w ${JSON.stringify(updatedJson)}`,
                 { stdio: ['pipe', 'pipe', 'pipe'] }
             );
             return true;
@@ -296,39 +295,46 @@ function getStaleUsageOrError(error: UsageError, now: number): UsageData {
     return setCachedUsageError(error, now);
 }
 
-async function getUsageToken(): Promise<string | null> {
+type TokenResult = { token: string } | { error: 'no-credentials' | 'token-expired' };
+
+async function getUsageToken(): Promise<TokenResult> {
     const now = Math.floor(Date.now() / 1000);
 
     // Return cached token if still valid
     if (cachedUsageToken && (now - usageTokenCacheTime) < TOKEN_CACHE_MAX_AGE) {
-        return cachedUsageToken;
+        return { token: cachedUsageToken };
     }
 
     const rawJson = readFullCredentials();
     if (!rawJson) {
-        return null;
+        return { error: 'no-credentials' };
     }
 
     const creds = parseOAuthCredentials(rawJson);
     if (!creds) {
-        return null;
+        return { error: 'no-credentials' };
     }
 
     // トークンが期限切れ or まもなく期限切れの場合、refreshTokenでリフレッシュ
-    if (isTokenExpired(creds) && creds.refreshToken) {
-        const refreshed = await refreshOAuthToken(creds.refreshToken);
-        if (refreshed) {
-            writeCredentials(rawJson, refreshed);
-            cachedUsageToken = refreshed.accessToken;
-            usageTokenCacheTime = now;
-            return refreshed.accessToken;
+    if (isTokenExpired(creds)) {
+        if (!creds.refreshToken) {
+            // リフレッシュトークンがない場合は復旧不能
+            return { error: 'token-expired' };
         }
-        // リフレッシュ失敗時は期限切れトークンをそのまま試す
+        const refreshed = await refreshOAuthToken(creds.refreshToken);
+        if (!refreshed) {
+            // リフレッシュ失敗: 期限切れトークンでAPIを叩いても401になるだけなので返さない
+            return { error: 'token-expired' };
+        }
+        writeCredentials(rawJson, refreshed);
+        cachedUsageToken = refreshed.accessToken;
+        usageTokenCacheTime = now;
+        return { token: refreshed.accessToken };
     }
 
     cachedUsageToken = creds.accessToken;
     usageTokenCacheTime = now;
-    return creds.accessToken;
+    return { token: creds.accessToken };
 }
 
 function readStaleUsageCache(): UsageData | null {
@@ -447,10 +453,11 @@ export async function fetchUsageData(): Promise<UsageData> {
     }
 
     // Get token before lock/rate-limit checks so auth failures are not masked as timeout.
-    const token = await getUsageToken();
-    if (!token) {
-        return getStaleUsageOrError('no-credentials', now);
+    const tokenResult = await getUsageToken();
+    if ('error' in tokenResult) {
+        return getStaleUsageOrError(tokenResult.error, now);
     }
+    const token = tokenResult.token;
 
     // Rate limit: only try API once per 30 seconds
     try {
